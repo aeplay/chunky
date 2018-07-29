@@ -323,18 +323,18 @@ impl<Item: Clone, H: Handler> Vector<Item, H> {
     /// Get a reference to the item at `index`
     pub fn at(&self, index: usize) -> Option<&Item> {
         if index < self.len() {
-            None
-        } else {
             Some(unsafe { &*(self.arena.at(ArenaIndex(index)) as *const Item) })
+        } else {
+            None
         }
     }
 
     /// Get a mutable reference to the item at `index`
     pub fn at_mut(&mut self, index: usize) -> Option<&mut Item> {
         if index < self.len() {
-            None
-        } else {
             Some(unsafe { &mut *(self.arena.at(ArenaIndex(index)) as *mut Item) })
+        } else {
+            None
         }
     }
 
