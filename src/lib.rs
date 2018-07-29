@@ -321,15 +321,21 @@ impl<Item: Clone, H: Handler> Vector<Item, H> {
     }
 
     /// Get a reference to the item at `index`
-    pub fn at(&self, index: usize) -> &Item {
-        assert!(index < self.len());
-        unsafe { &*(self.arena.at(ArenaIndex(index)) as *const Item) }
+    pub fn at(&self, index: usize) -> Option<&Item> {
+        if index < self.len() {
+            None
+        } else {
+            Some(unsafe { &*(self.arena.at(ArenaIndex(index)) as *const Item) })
+        }
     }
 
     /// Get a mutable reference to the item at `index`
-    pub fn at_mut(&mut self, index: usize) -> &mut Item {
-        assert!(index < self.len());
-        unsafe { &mut *(self.arena.at(ArenaIndex(index)) as *mut Item) }
+    pub fn at_mut(&mut self, index: usize) -> Option<&mut Item> {
+        if index < self.len() {
+            None
+        } else {
+            Some(unsafe { &mut *(self.arena.at(ArenaIndex(index)) as *mut Item) })
+        }
     }
 
     /// Push an item onto the vector
@@ -557,7 +563,7 @@ impl<H: Handler> MultiArena<H> {
         let n_bins = multi_arena.used_bin_sizes.len();
 
         for i in 0..n_bins {
-            let size = *multi_arena.used_bin_sizes.at(i);
+            let size = *multi_arena.used_bin_sizes.at(i).unwrap();
             multi_arena.get_or_insert_bin_for_size(size);
         }
 
