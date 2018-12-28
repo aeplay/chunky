@@ -228,7 +228,7 @@ impl<H: Handler> Arena<H> {
     ///
     /// This is handled like this so items of heterogeneous types or sizes less
     /// than the fixed item size can be added to the collection.
-    pub fn push(&mut self) -> (*mut u8, ArenaIndex) {
+    pub fn push(&mut self) -> (*mut (), ArenaIndex) {
         // Make sure the item can fit in the current chunk
         if (*self.len + 1) > self.chunks.len() * self.items_per_chunk() {
             // If not, create a new chunk
@@ -240,7 +240,7 @@ impl<H: Handler> Arena<H> {
         *self.len += 1;
         unsafe {
             (
-                self.chunks.last_mut().unwrap().ptr.offset(offset as isize),
+                self.chunks.last_mut().unwrap().ptr.offset(offset as isize) as *mut (),
                 index,
             )
         }
@@ -262,7 +262,7 @@ impl<H: Handler> Arena<H> {
     /// and then popping, returning the swapped in item (unless empty).
     ///
     /// This is a O(1) way of removing an item if the order of items doesn't matter.
-    pub unsafe fn swap_remove(&mut self, index: ArenaIndex) -> Option<*const u8> {
+    pub unsafe fn swap_remove(&mut self, index: ArenaIndex) -> Option<*const ()> {
         assert!(*self.len > 0);
         let last_index = *self.len - 1;
         if last_index == index.0 {
@@ -279,18 +279,18 @@ impl<H: Handler> Arena<H> {
     }
 
     /// Get a pointer to the item at `index`
-    pub unsafe fn at(&self, index: ArenaIndex) -> *const u8 {
+    pub unsafe fn at(&self, index: ArenaIndex) -> *const () {
         self.chunks[index.0 / self.items_per_chunk()]
             .ptr
-            .offset(((index.0 % self.items_per_chunk()) * self.item_size) as isize)
+            .offset(((index.0 % self.items_per_chunk()) * self.item_size) as isize) as *const ()
     }
 
     /// Get a mutable pointer to the item at `index`
-    pub unsafe fn at_mut(&mut self, index: ArenaIndex) -> *mut u8 {
+    pub unsafe fn at_mut(&mut self, index: ArenaIndex) -> *mut () {
         let items_per_chunk = self.items_per_chunk();
         self.chunks[index.0 / items_per_chunk]
             .ptr
-            .offset(((index.0 % items_per_chunk) * self.item_size) as isize)
+            .offset(((index.0 % items_per_chunk) * self.item_size) as isize) as *mut ()
     }
 }
 
@@ -430,7 +430,7 @@ impl<H: Handler> Queue<H> {
     /// This is handled like this so items of heterogeneous types can be enqueued.
     // TODO: return done_guard to mark as concurrently readable
     #[cfg_attr(feature = "cargo-clippy", allow(cast_ptr_alignment))]
-    pub unsafe fn enqueue(&mut self, size: usize) -> *mut u8 {
+    pub unsafe fn enqueue(&mut self, size: usize) -> *mut () {
         enum EnqueueResult {
             Success(*mut u8),
             RetryInNewChunkOfSize(usize),
@@ -468,7 +468,7 @@ impl<H: Handler> Queue<H> {
         };
 
         match result {
-            EnqueueResult::Success(payload_ptr) => payload_ptr,
+            EnqueueResult::Success(payload_ptr) => payload_ptr as *mut (),
             EnqueueResult::RetryInNewChunkOfSize(new_chunk_size) => {
                 self.chunks.push(Chunk::create(
                     self.ident.sub(*self.last_chunk_at),
@@ -481,7 +481,7 @@ impl<H: Handler> Queue<H> {
 
     /// Dequeue an item. Returns a pointer to the item in the queue, unless the queue is empty.
     // TODO: return done_guard to mark as droppable
-    pub unsafe fn dequeue(&mut self) -> Option<*const u8> {
+    pub unsafe fn dequeue(&mut self) -> Option<*const ()> {
         enum DequeueResult {
             Empty,
             Success(*const u8),
@@ -513,7 +513,7 @@ impl<H: Handler> Queue<H> {
 
         match result {
             DequeueResult::Empty => None,
-            DequeueResult::Success(payload_ptr) => Some(payload_ptr),
+            DequeueResult::Success(payload_ptr) => Some(payload_ptr as *const ()),
             DequeueResult::RetryInNextChunk => {
                 self.chunks_to_drop.push(self.chunks.remove(0));
                 self.dequeue()
@@ -605,7 +605,7 @@ impl<H: Handler> MultiArena<H> {
     }
 
     /// Get an (untyped) pointer to the item at the given index
-    pub fn at(&self, index: MultiArenaIndex) -> *const u8 {
+    pub fn at(&self, index: MultiArenaIndex) -> *const () {
         unsafe {
             self.bins[index.0]
                 .as_ref()
@@ -615,7 +615,7 @@ impl<H: Handler> MultiArena<H> {
     }
 
     /// Get an (untyped) mutable pointer to the item at the given index
-    pub fn at_mut(&mut self, index: MultiArenaIndex) -> *mut u8 {
+    pub fn at_mut(&mut self, index: MultiArenaIndex) -> *mut () {
         unsafe {
             self.bins[index.0]
                 .as_mut()
@@ -625,7 +625,7 @@ impl<H: Handler> MultiArena<H> {
     }
 
     /// Add an item to the end of the bin corresponding to its size
-    pub fn push(&mut self, size: usize) -> (*mut u8, MultiArenaIndex) {
+    pub fn push(&mut self, size: usize) -> (*mut (), MultiArenaIndex) {
         let bin_index = self.size_to_index(size);
         let bin = &mut self.get_or_insert_bin_for_size(size);
         let (ptr, arena_index) = bin.push();
@@ -633,7 +633,7 @@ impl<H: Handler> MultiArena<H> {
     }
 
     /// Remove the item referenced by `index` from its bin by swapping with the bin's last item
-    pub fn swap_remove_within_bin(&mut self, index: MultiArenaIndex) -> Option<*const u8> {
+    pub fn swap_remove_within_bin(&mut self, index: MultiArenaIndex) -> Option<*const ()> {
         unsafe {
             self.bins[index.0]
                 .as_mut()
