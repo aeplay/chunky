@@ -14,8 +14,6 @@ use std::ptr;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use simple_allocator_trait::{Allocator, DefaultHeap};
-
 /// Identifies a chunk or chunk group uniquely - to be used for persistence
 #[derive(Clone)]
 pub struct Ident(pub String);
@@ -33,115 +31,144 @@ impl<T: ::std::fmt::Display> From<T> for Ident {
     }
 }
 
-struct Chunk<M: Manager> {
-    ptr: *mut u8,
-    size: usize,
-    _h: PhantomData<*const M>,
-}
-
-impl<M: Manager> Chunk<M> {
-    /// load a chunk with a given identifier, or create it if it didn't exist
-    pub fn load_or_create(ident: Ident, size: usize) -> (Chunk<M>, bool) {
-        let (ptr, created_new) = M::load_or_create_chunk(ident, size);
-        (
-            Chunk {
-                ptr,
-                size,
-                _h: PhantomData,
-            },
-            created_new,
-        )
-    }
-
-    /// load a chunk with a given identifier, assumes it exists
-    pub fn load(ident: Ident) -> Chunk<M> {
-        let (ptr, size) = M::load_chunk(ident);
-        Chunk {
-            ptr,
-            size,
-            _h: PhantomData,
-        }
-    }
-
-    /// load a chunk with a given identifier, assumes it doesn't exist
-    pub fn create(ident: Ident, size: usize) -> Chunk<M> {
-        let ptr = M::create_chunk(ident, size);
-        Chunk {
-            ptr,
-            size,
-            _h: PhantomData,
-        }
-    }
-
-    /// destroy a chunk and delete any persisted representation
-    pub fn forget_forever(self) {
-        unsafe {
-            M::destroy_chunk(self.ptr, self.size);
-        }
-        mem::forget(self);
-    }
-}
-
-impl<M: Manager> Drop for Chunk<M> {
-    fn drop(&mut self) {
-        unsafe { M::unload_chunk(self.ptr, self.size) }
-    }
-}
-
 /// A strategy for managing chunks
 pub trait Manager: Sized {
+    type Chunk: ::std::ops::Deref<Target=[u8]> + ::std::ops::DerefMut<Target=[u8]>;
     /// Create a new chunk with a given identifier, assumes it doesn't exist
-    fn create_chunk(ident: Ident, size: usize) -> *mut u8;
+    fn create_chunk(ident: Ident, size: usize) -> Self::Chunk;
     /// Load a chunk with a given identifier, or create it if it doesn't exist
-    fn load_or_create_chunk(ident: Ident, size: usize) -> (*mut u8, bool);
+    fn load_or_create_chunk(ident: Ident, size: usize) -> (Self::Chunk, bool);
     /// Load a chunk with a given identifier, assumes it exists
-    fn load_chunk(ident: Ident) -> (*mut u8, usize);
-    /// Deallocate a chunk, but keep any persisted representation of it
-    unsafe fn unload_chunk(ptr: *mut u8, size: usize);
+    fn load_chunk(ident: Ident) -> Self::Chunk;
     /// Deallocate a chunk and delete any persisted representation of it
-    unsafe fn destroy_chunk(ptr: *mut u8, size: usize);
+    /// (unlike Drop, which only unloads a chunk)
+    fn forget_chunk(handle: Self::Chunk);
 }
 
 /// A `Manager` that allocates chunks on the heap
 pub struct HeapManager;
 
 impl Manager for HeapManager {
-    fn create_chunk(_ident: Ident, size: usize) -> *mut u8 {
+    type Chunk = Vec<u8>;
+
+    fn create_chunk(_ident: Ident, size: usize) -> Self::Chunk {
         //println!("Allocating chunk {} of size {}", ident.0, size);
-        DefaultHeap::allocate(size)
+        Vec::with_capacity(size)
     }
 
-    fn load_or_create_chunk(ident: Ident, size: usize) -> (*mut u8, bool) {
+    fn load_or_create_chunk(ident: Ident, size: usize) -> (Self::Chunk, bool) {
         (Self::create_chunk(ident, size), true)
     }
 
-    fn load_chunk(_ident: Ident) -> (*mut u8, usize) {
+    fn load_chunk(_ident: Ident) -> Self::Chunk {
         panic!("can't load memory based chunks");
     }
 
-    unsafe fn unload_chunk(ptr: *mut u8, size: usize) {
-        DefaultHeap::deallocate(ptr, size);
+    fn forget_chunk(handle: Self::Chunk) {
+        ::std::mem::drop(handle);
+    }
+}
+
+use std::fs::{OpenOptions, File};
+use memmap::MmapMut;
+
+/// A `Manager` that allocates chunks by mmapping files
+pub struct MmapManager;
+pub struct MmapManagerChunk(MmapMut, File, Ident);
+
+impl ::std::ops::Deref for MmapManagerChunk {
+    type Target=[u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl ::std::ops::DerefMut for MmapManagerChunk {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl Drop for MmapManagerChunk {
+    fn drop(&mut self) {
+        self.0.flush().expect(format!("Couldn't flush file {}", &((self.2).0)).as_str());
+    }
+}
+
+impl Manager for MmapManager {
+    type Chunk = MmapManagerChunk;
+
+    fn create_chunk(ident: Ident, size: usize) -> MmapManagerChunk {
+        let file = OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .create_new(true)
+                            .open(&ident.0).expect(format!("Can't create file {}", ident.0).as_str());
+        file.set_len(size as u64).expect(format!("Can't grow file {}", ident.0).as_str());
+
+        MmapManagerChunk(
+            unsafe { MmapMut::map_mut(&file).expect(format!("Can't mmap file {}", ident.0).as_str())},
+            file,
+            ident
+        )
     }
 
-    unsafe fn destroy_chunk(ptr: *mut u8, size: usize) {
-        Self::unload_chunk(ptr, size);
+    fn load_or_create_chunk(ident: Ident, size: usize) -> (Self::Chunk, bool) {
+        let existed = ::std::fs::metadata(&ident.0).is_ok();
+
+        let file = OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .create(true)
+                            .open(&ident.0).expect(format!("Can't load or create file {}", ident.0).as_str());
+        if !existed {
+            file.set_len(size as u64).expect(format!("Can't grow file {}", ident.0).as_str());
+        }
+
+        (MmapManagerChunk(
+            unsafe { MmapMut::map_mut(&file).expect(format!("Can't mmap file {}", ident.0).as_str())},
+            file,
+            ident
+        ), existed)
+    }
+
+    fn load_chunk(ident: Ident) -> Self::Chunk {
+        let file = OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(&ident.0).expect(format!("Can't load file {}", ident.0).as_str());
+
+        MmapManagerChunk(
+            unsafe { MmapMut::map_mut(&file).expect(format!("Can't mmap file {}", ident.0).as_str())},
+            file,
+            ident
+        )
+    }
+
+    /// Deallocate a chunk and delete any persisted representation of it
+    /// (unlike Drop, which only unloads a chunk)
+    fn forget_chunk(handle: Self::Chunk) {
+        let ident = handle.2.clone();
+        std::mem::drop(handle);
+        ::std::fs::remove_file(&ident.0).expect(format!("Couldn't remove file {}", ident.0).as_str());
     }
 }
 
 /// A single value stored in a chunk
 pub struct Value<V, M: Manager> {
-    chunk: Chunk<M>,
+    chunk: M::Chunk,
     _marker: PhantomData<*mut V>,
 }
 
 impl<V, M: Manager> Value<V, M> {
     /// Load the value in the chunk with the given identifier, or create it using a default value
     pub fn load_or_default(ident: Ident, default: V) -> Value<V, M> {
-        let (chunk, created_new) = Chunk::load_or_create(ident, mem::size_of::<V>());
+        let (mut chunk, created_new) = M::load_or_create_chunk(ident, mem::size_of::<V>());
 
         if created_new {
             unsafe {
-                ptr::write(chunk.ptr as *mut V, default);
+                ptr::write(chunk.as_mut_ptr() as *mut V, default);
             }
         }
 
@@ -156,20 +183,20 @@ impl<V, M: Manager> Deref for Value<V, M> {
     type Target = V;
 
     fn deref(&self) -> &V {
-        unsafe { (self.chunk.ptr as *const V).as_ref().unwrap() }
+        unsafe { (self.chunk.as_ptr() as *const V).as_ref().unwrap() }
     }
 }
 
 impl<V, M: Manager> DerefMut for Value<V, M> {
     fn deref_mut(&mut self) -> &mut V {
-        unsafe { (self.chunk.ptr as *mut V).as_mut().unwrap() }
+        unsafe { (self.chunk.as_mut_ptr() as *mut V).as_mut().unwrap() }
     }
 }
 
 impl<V, M: Manager> Drop for Value<V, M> {
     fn drop(&mut self) {
         unsafe {
-            ::std::ptr::drop_in_place(self.chunk.ptr);
+            ::std::ptr::drop_in_place(self.chunk.as_mut_ptr());
         };
     }
 }
@@ -181,7 +208,7 @@ pub struct ArenaIndex(pub usize);
 /// Stores items of a fixed (max) size consecutively in a collection of chunks
 pub struct Arena<M: Manager> {
     ident: Ident,
-    chunks: Vec<Chunk<M>>,
+    chunks: Vec<M::Chunk>,
     chunk_size: usize,
     item_size: usize,
     len: Value<usize, M>,
@@ -196,7 +223,7 @@ impl<M: Manager> Arena<M> {
         let mut chunks = Vec::new();
 
         for i in 0..*len {
-            chunks.push(Chunk::<M>::load(ident.sub(i)));
+            chunks.push(M::load_chunk(ident.sub(i)));
         }
 
         Arena {
@@ -232,14 +259,14 @@ impl<M: Manager> Arena<M> {
         if (*self.len + 1) > self.chunks.len() * self.items_per_chunk() {
             // If not, create a new chunk
             self.chunks
-                .push(Chunk::create(self.ident.sub(*self.len), self.chunk_size));
+                .push(M::create_chunk(self.ident.sub(*self.len), self.chunk_size));
         }
         let offset = (*self.len % self.items_per_chunk()) * self.item_size;
         let index = ArenaIndex(*self.len);
         *self.len += 1;
         unsafe {
             (
-                self.chunks.last_mut().unwrap().ptr.offset(offset as isize),
+                self.chunks.last_mut().unwrap().as_mut_ptr().offset(offset as isize),
                 index,
             )
         }
@@ -250,10 +277,7 @@ impl<M: Manager> Arena<M> {
         *self.len -= 1;
         // If possible, remove the last chunk as well
         if *self.len + self.items_per_chunk() < self.chunks.len() * self.items_per_chunk() {
-            self.chunks
-                .pop()
-                .expect("should have chunk left")
-                .forget_forever();
+            M::forget_chunk(self.chunks.pop().expect("should have chunk left"));
         }
     }
 
@@ -280,7 +304,7 @@ impl<M: Manager> Arena<M> {
     /// Get a pointer to the item at `index`
     pub unsafe fn at(&self, index: ArenaIndex) -> *const u8 {
         self.chunks[index.0 / self.items_per_chunk()]
-            .ptr
+            .as_ptr()
             .offset(((index.0 % self.items_per_chunk()) * self.item_size) as isize)
     }
 
@@ -288,7 +312,7 @@ impl<M: Manager> Arena<M> {
     pub unsafe fn at_mut(&mut self, index: ArenaIndex) -> *mut u8 {
         let items_per_chunk = self.items_per_chunk();
         self.chunks[index.0 / items_per_chunk]
-            .ptr
+            .as_mut_ptr()
             .offset(((index.0 % items_per_chunk) * self.item_size) as isize)
     }
 }
@@ -365,13 +389,13 @@ impl<Item: Clone, M: Manager> Vector<Item, M> {
 pub struct Queue<M: Manager> {
     ident: Ident,
     typical_chunk_size: usize,
-    chunks: Vec<Chunk<M>>,
+    chunks: Vec<M::Chunk>,
     first_chunk_at: Value<usize, M>,
     last_chunk_at: Value<usize, M>,
     read_at: Value<usize, M>,
     write_at: Value<usize, M>,
     len: Value<usize, M>,
-    chunks_to_drop: Vec<Chunk<M>>,
+    chunks_to_drop: Vec<M::Chunk>,
 }
 
 // TODO invent a container struct with NonZero instead
@@ -399,8 +423,8 @@ impl<M: Manager> Queue<M> {
         if *queue.len > 0 {
             let mut chunk_offset = *queue.first_chunk_at;
             while chunk_offset <= *queue.last_chunk_at {
-                let chunk = Chunk::load(ident.sub(chunk_offset));
-                chunk_offset += chunk.size;
+                let chunk = M::load_chunk(ident.sub(chunk_offset));
+                chunk_offset += chunk.len();
                 queue.chunks.push(chunk);
             }
         }
@@ -408,7 +432,7 @@ impl<M: Manager> Queue<M> {
         if queue.chunks.is_empty() {
             queue
                 .chunks
-                .push(Chunk::create(ident.sub(0), typical_chunk_size));
+                .push(M::create_chunk(ident.sub(0), typical_chunk_size));
         }
 
         queue
@@ -439,13 +463,13 @@ impl<M: Manager> Queue<M> {
             let ref_size = mem::size_of::<NextItemRef>();
             let offset = *self.write_at - *self.last_chunk_at;
             let chunk = self.chunks.last_mut().expect("should always have a chunk");
-            let entry_ptr = chunk.ptr.offset(offset as isize);
+            let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
 
             // one more next item ref needs to fit afterwards,
             // even if it will just be a jump marker!
             let min_space = ref_size + size + ref_size;
 
-            if offset + min_space <= chunk.size {
+            if offset + min_space <= chunk.len() {
                 // store the item size as a header
                 *(entry_ptr as *mut NextItemRef) = NextItemRef::SameChunk(ref_size + size);
                 let payload_ptr = entry_ptr.offset(ref_size as isize);
@@ -460,7 +484,7 @@ impl<M: Manager> Queue<M> {
                 *(entry_ptr as *mut NextItemRef) = NextItemRef::NextChunk;
                 let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
                 // retry at the beginning of a new chunk
-                *self.last_chunk_at += chunk.size;
+                *self.last_chunk_at += chunk.len();
                 *self.write_at = *self.last_chunk_at;
                 EnqueueResult::RetryInNewChunkOfSize(new_chunk_size)
             }
@@ -469,7 +493,7 @@ impl<M: Manager> Queue<M> {
         match result {
             EnqueueResult::Success(payload_ptr) => payload_ptr,
             EnqueueResult::RetryInNewChunkOfSize(new_chunk_size) => {
-                self.chunks.push(Chunk::create(
+                self.chunks.push(M::create_chunk(
                     self.ident.sub(*self.last_chunk_at),
                     new_chunk_size,
                 ));
@@ -491,13 +515,13 @@ impl<M: Manager> Queue<M> {
             DequeueResult::Empty
         } else {
             let offset = *self.read_at - *self.first_chunk_at;
-            let chunk = &self.chunks[0];
-            let entry_ptr = chunk.ptr.offset(offset as isize);
+            let chunk = &mut self.chunks[0];
+            let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
 
             #[allow(clippy::cast_ptr_alignment)]
             match *(entry_ptr as *mut NextItemRef) {
                 NextItemRef::NextChunk => {
-                    *self.first_chunk_at += chunk.size;
+                    *self.first_chunk_at += chunk.len();
                     *self.read_at = *self.first_chunk_at;
                     DequeueResult::RetryInNextChunk
                 }
@@ -523,7 +547,7 @@ impl<M: Manager> Queue<M> {
     /// Delete chunks which have already been read
     pub unsafe fn drop_old_chunks(&mut self) {
         for chunk in self.chunks_to_drop.drain(..) {
-            chunk.forget_forever();
+            M::forget_chunk(chunk);
         }
     }
 }
