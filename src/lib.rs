@@ -14,7 +14,6 @@ use std::ptr;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-extern crate simple_allocator_trait;
 use simple_allocator_trait::{Allocator, DefaultHeap};
 
 /// Identifies a chunk or chunk group uniquely - to be used for persistence
@@ -24,7 +23,7 @@ pub struct Ident(pub String);
 impl Ident {
     /// Create a sub-identifier within a group
     pub fn sub<T: ::std::fmt::Display>(&self, suffix: T) -> Ident {
-        Ident(format!("{}:{}", self.0, suffix))
+        Ident(format!("{}_{}", self.0, suffix))
     }
 }
 
@@ -34,16 +33,16 @@ impl<T: ::std::fmt::Display> From<T> for Ident {
     }
 }
 
-struct Chunk<H: Handler> {
+struct Chunk<M: Manager> {
     ptr: *mut u8,
     size: usize,
-    _h: PhantomData<*const H>,
+    _h: PhantomData<*const M>,
 }
 
-impl<H: Handler> Chunk<H> {
+impl<M: Manager> Chunk<M> {
     /// load a chunk with a given identifier, or create it if it didn't exist
-    pub fn load_or_create(ident: Ident, size: usize) -> (Chunk<H>, bool) {
-        let (ptr, created_new) = H::load_or_create_chunk(ident, size);
+    pub fn load_or_create(ident: Ident, size: usize) -> (Chunk<M>, bool) {
+        let (ptr, created_new) = M::load_or_create_chunk(ident, size);
         (
             Chunk {
                 ptr,
@@ -55,8 +54,8 @@ impl<H: Handler> Chunk<H> {
     }
 
     /// load a chunk with a given identifier, assumes it exists
-    pub fn load(ident: Ident) -> Chunk<H> {
-        let (ptr, size) = H::load_chunk(ident);
+    pub fn load(ident: Ident) -> Chunk<M> {
+        let (ptr, size) = M::load_chunk(ident);
         Chunk {
             ptr,
             size,
@@ -65,8 +64,8 @@ impl<H: Handler> Chunk<H> {
     }
 
     /// load a chunk with a given identifier, assumes it doesn't exist
-    pub fn create(ident: Ident, size: usize) -> Chunk<H> {
-        let ptr = H::create_chunk(ident, size);
+    pub fn create(ident: Ident, size: usize) -> Chunk<M> {
+        let ptr = M::create_chunk(ident, size);
         Chunk {
             ptr,
             size,
@@ -77,20 +76,20 @@ impl<H: Handler> Chunk<H> {
     /// destroy a chunk and delete any persisted representation
     pub fn forget_forever(self) {
         unsafe {
-            H::destroy_chunk(self.ptr, self.size);
+            M::destroy_chunk(self.ptr, self.size);
         }
         mem::forget(self);
     }
 }
 
-impl<H: Handler> Drop for Chunk<H> {
+impl<M: Manager> Drop for Chunk<M> {
     fn drop(&mut self) {
-        unsafe { H::unload_chunk(self.ptr, self.size) }
+        unsafe { M::unload_chunk(self.ptr, self.size) }
     }
 }
 
 /// A strategy for managing chunks
-pub trait Handler: Sized {
+pub trait Manager: Sized {
     /// Create a new chunk with a given identifier, assumes it doesn't exist
     fn create_chunk(ident: Ident, size: usize) -> *mut u8;
     /// Load a chunk with a given identifier, or create it if it doesn't exist
@@ -103,10 +102,10 @@ pub trait Handler: Sized {
     unsafe fn destroy_chunk(ptr: *mut u8, size: usize);
 }
 
-/// A `Handler` that allocates chunks on the heap
-pub struct HeapHandler;
+/// A `Manager` that allocates chunks on the heap
+pub struct HeapManager;
 
-impl Handler for HeapHandler {
+impl Manager for HeapManager {
     fn create_chunk(_ident: Ident, size: usize) -> *mut u8 {
         //println!("Allocating chunk {} of size {}", ident.0, size);
         DefaultHeap::allocate(size)
@@ -130,14 +129,14 @@ impl Handler for HeapHandler {
 }
 
 /// A single value stored in a chunk
-pub struct Value<V, H: Handler> {
-    chunk: Chunk<H>,
+pub struct Value<V, M: Manager> {
+    chunk: Chunk<M>,
     _marker: PhantomData<*mut V>,
 }
 
-impl<V, H: Handler> Value<V, H> {
+impl<V, M: Manager> Value<V, M> {
     /// Load the value in the chunk with the given identifier, or create it using a default value
-    pub fn load_or_default(ident: Ident, default: V) -> Value<V, H> {
+    pub fn load_or_default(ident: Ident, default: V) -> Value<V, M> {
         let (chunk, created_new) = Chunk::load_or_create(ident, mem::size_of::<V>());
 
         if created_new {
@@ -153,7 +152,7 @@ impl<V, H: Handler> Value<V, H> {
     }
 }
 
-impl<V, H: Handler> Deref for Value<V, H> {
+impl<V, M: Manager> Deref for Value<V, M> {
     type Target = V;
 
     fn deref(&self) -> &V {
@@ -161,13 +160,13 @@ impl<V, H: Handler> Deref for Value<V, H> {
     }
 }
 
-impl<V, H: Handler> DerefMut for Value<V, H> {
+impl<V, M: Manager> DerefMut for Value<V, M> {
     fn deref_mut(&mut self) -> &mut V {
         unsafe { (self.chunk.ptr as *mut V).as_mut().unwrap() }
     }
 }
 
-impl<V, H: Handler> Drop for Value<V, H> {
+impl<V, M: Manager> Drop for Value<V, M> {
     fn drop(&mut self) {
         unsafe {
             ::std::ptr::drop_in_place(self.chunk.ptr);
@@ -180,24 +179,24 @@ impl<V, H: Handler> Drop for Value<V, H> {
 pub struct ArenaIndex(pub usize);
 
 /// Stores items of a fixed (max) size consecutively in a collection of chunks
-pub struct Arena<H: Handler> {
+pub struct Arena<M: Manager> {
     ident: Ident,
-    chunks: Vec<Chunk<H>>,
+    chunks: Vec<Chunk<M>>,
     chunk_size: usize,
     item_size: usize,
-    len: Value<usize, H>,
+    len: Value<usize, M>,
 }
 
-impl<H: Handler> Arena<H> {
+impl<M: Manager> Arena<M> {
     /// Create a new arena given a chunk group identifier, chunk size and (max) item size
-    pub fn new(ident: Ident, chunk_size: usize, item_size: usize) -> Arena<H> {
+    pub fn new(ident: Ident, chunk_size: usize, item_size: usize) -> Arena<M> {
         assert!(chunk_size >= item_size);
 
-        let len = Value::<usize, H>::load_or_default(ident.sub("len"), 0);
+        let len = Value::<usize, M>::load_or_default(ident.sub("len"), 0);
         let mut chunks = Vec::new();
 
         for i in 0..*len {
-            chunks.push(Chunk::<H>::load(ident.sub(i)));
+            chunks.push(Chunk::<M>::load(ident.sub(i)));
         }
 
         Arena {
@@ -295,12 +294,12 @@ impl<H: Handler> Arena<H> {
 }
 
 /// A vector which stores items of a known type in an `Arena`
-pub struct Vector<Item: Clone, H: Handler> {
-    arena: Arena<H>,
+pub struct Vector<Item: Clone, M: Manager> {
+    arena: Arena<M>,
     marker: PhantomData<Item>,
 }
 
-impl<Item: Clone, H: Handler> Vector<Item, H> {
+impl<Item: Clone, M: Manager> Vector<Item, M> {
     /// Create a new chunky vector
     pub fn new(ident: Ident, chunk_size: usize) -> Self {
         let item_size = mem::size_of::<Item>();
@@ -363,16 +362,16 @@ impl<Item: Clone, H: Handler> Vector<Item, H> {
 }
 
 /// A FIFO queue which stores heterogeneously sized items
-pub struct Queue<H: Handler> {
+pub struct Queue<M: Manager> {
     ident: Ident,
     typical_chunk_size: usize,
-    chunks: Vec<Chunk<H>>,
-    first_chunk_at: Value<usize, H>,
-    last_chunk_at: Value<usize, H>,
-    read_at: Value<usize, H>,
-    write_at: Value<usize, H>,
-    len: Value<usize, H>,
-    chunks_to_drop: Vec<Chunk<H>>,
+    chunks: Vec<Chunk<M>>,
+    first_chunk_at: Value<usize, M>,
+    last_chunk_at: Value<usize, M>,
+    read_at: Value<usize, M>,
+    write_at: Value<usize, M>,
+    len: Value<usize, M>,
+    chunks_to_drop: Vec<Chunk<M>>,
 }
 
 // TODO invent a container struct with NonZero instead
@@ -381,7 +380,7 @@ enum NextItemRef {
     NextChunk,
 }
 
-impl<H: Handler> Queue<H> {
+impl<M: Manager> Queue<M> {
     /// Create a new queue
     pub fn new(ident: &Ident, typical_chunk_size: usize) -> Self {
         let mut queue = Queue {
@@ -537,25 +536,25 @@ pub struct MultiArenaIndex(pub usize, pub ArenaIndex);
 /// heterogenously-sized items which will be stored in the most appropriately-sized bin.
 ///
 /// All Bins will use children of a main chunker to create their chunks.
-pub struct MultiArena<H: Handler> {
+pub struct MultiArena<M: Manager> {
     ident: Ident,
     typical_chunk_size: usize,
     base_size: usize,
     /// All fixed-size bins in this multi-sized collection
     ///
     /// The bin at index `i` will have item-size `base_size * 2 ^ i`
-    bins: Vec<Option<Arena<H>>>,
-    used_bin_sizes: Vector<usize, H>,
+    bins: Vec<Option<Arena<M>>>,
+    used_bin_sizes: Vector<usize, M>,
 }
 
-impl<H: Handler> MultiArena<H> {
+impl<M: Manager> MultiArena<M> {
     /// Create a new `MultiArena` collection using `Arena` bins and a base size that represents
     /// the smallest expected item size (used as the item size of the smallest-sized bin)
     pub fn new(ident: Ident, typical_chunk_size: usize, base_size: usize) -> Self {
         let mut multi_arena = MultiArena {
             typical_chunk_size,
             base_size,
-            used_bin_sizes: Vector::<usize, H>::new(ident.sub("used_bin_sizes"), 1024),
+            used_bin_sizes: Vector::<usize, M>::new(ident.sub("used_bin_sizes"), 1024),
             ident,
             bins: Vec::new(),
         };
@@ -580,7 +579,7 @@ impl<H: Handler> MultiArena<H> {
         (self.size_rounded_multiple(size) as f32).log2() as usize
     }
 
-    fn get_or_insert_bin_for_size(&mut self, size: usize) -> &mut Arena<H> {
+    fn get_or_insert_bin_for_size(&mut self, size: usize) -> &mut Arena<M> {
         let index = self.size_to_index(size);
         let size_rounded_up = self.size_rounded_multiple(size) * self.base_size;
 
