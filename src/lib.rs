@@ -429,7 +429,7 @@ impl<H: Handler> Queue<H> {
     ///
     /// This is handled like this so items of heterogeneous types can be enqueued.
     // TODO: return done_guard to mark as concurrently readable
-    #[cfg_attr(feature = "cargo-clippy", allow(cast_ptr_alignment))]
+    #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn enqueue(&mut self, size: usize) -> *mut u8 {
         enum EnqueueResult {
             Success(*mut u8),
@@ -495,7 +495,7 @@ impl<H: Handler> Queue<H> {
             let chunk = &self.chunks[0];
             let entry_ptr = chunk.ptr.offset(offset as isize);
 
-            #[cfg_attr(feature = "cargo-clippy", allow(cast_ptr_alignment))]
+            #[allow(clippy::cast_ptr_alignment)]
             match *(entry_ptr as *mut NextItemRef) {
                 NextItemRef::NextChunk => {
                     *self.first_chunk_at += chunk.size;
@@ -585,7 +585,7 @@ impl<H: Handler> MultiArena<H> {
         let size_rounded_up = self.size_rounded_multiple(size) * self.base_size;
 
         if index >= self.bins.len() {
-            self.bins.resize_default(index + 1)
+            self.bins.resize_with(index + 1, Default::default)
         }
 
         let maybe_bin = &mut self.bins[index];
