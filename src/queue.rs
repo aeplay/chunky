@@ -38,20 +38,14 @@ impl Queue {
             storage: storage
         };
 
-        // if the persisted end_offset is > 0, persisted chunks need to be loaded
-        if *queue.len > 0 {
+        // if the persisted last_chunk_at is > 0, persisted chunks need to be loaded
+        if *queue.last_chunk_at > 0 {
             let mut chunk_offset = *queue.first_chunk_at;
             while chunk_offset <= *queue.last_chunk_at {
                 let chunk = queue.storage.load_chunk(ident.sub(chunk_offset));
                 chunk_offset += chunk.len();
                 queue.chunks.push(chunk);
             }
-        }
-
-        if queue.chunks.is_empty() {
-            queue
-                .chunks
-                .push(queue.storage.create_chunk(ident.sub(0), typical_chunk_size));
         }
 
         queue
@@ -88,25 +82,32 @@ impl Queue {
             // even if it will just be a jump marker!
             let min_space = ref_size + size + ref_size;
 
-            if offset + min_space <= chunk.len() {
-                // store the item size as a header
-                *(entry_ptr as *mut NextItemRef) = NextItemRef::SameChunk(ref_size + size);
-                let payload_ptr = entry_ptr.offset(ref_size as isize);
-                *self.write_at += ref_size + size;
-                *self.len += 1;
-                // return the pointer to where the item can be written
-                EnqueueResult::Success(payload_ptr)
+            if let Some(chunk) = self.chunks.last_mut() {
+                if offset + min_space <= chunk.len() {
+                    // store the item size as a header
+                    *(entry_ptr as *mut NextItemRef) = NextItemRef::SameChunk(ref_size + size);
+                    let payload_ptr = entry_ptr.offset(ref_size as isize);
+                    *self.write_at += ref_size + size;
+                    *self.len += 1;
+                    // return the pointer to where the item can be written
+                    EnqueueResult::Success(payload_ptr)
+                } else {
+                    //println!("Not enough space. Offset: {}, Min Space: {},
+                    //          Chunk size: {}", offset, min_space, chunk.size);
+                    // store a jump marker instead of item size
+                    *(entry_ptr as *mut NextItemRef) = NextItemRef::NextChunk;
+                    let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
+                    // retry at the beginning of a new chunk
+                    *self.last_chunk_at += chunk.len();
+                    *self.write_at = *self.last_chunk_at;
+                    EnqueueResult::RetryInNewChunkOfSize(new_chunk_size)
+                }
             } else {
-                //println!("Not enough space. Offset: {}, Min Space: {},
-                //          Chunk size: {}", offset, min_space, chunk.size);
-                // store a jump marker instead of item size
-                *(entry_ptr as *mut NextItemRef) = NextItemRef::NextChunk;
+                // create first chunk
                 let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
-                // retry at the beginning of a new chunk
-                *self.last_chunk_at += chunk.len();
-                *self.write_at = *self.last_chunk_at;
                 EnqueueResult::RetryInNewChunkOfSize(new_chunk_size)
             }
+
         };
 
         match result {
