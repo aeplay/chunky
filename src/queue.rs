@@ -74,15 +74,14 @@ impl Queue {
 
         let result = {
             let ref_size = ::std::mem::size_of::<NextItemRef>();
-            let offset = *self.write_at - *self.last_chunk_at;
-            let chunk = self.chunks.last_mut().expect("should always have a chunk");
-            let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
 
             // one more next item ref needs to fit afterwards,
             // even if it will just be a jump marker!
             let min_space = ref_size + size + ref_size;
 
             if let Some(chunk) = self.chunks.last_mut() {
+                let offset = *self.write_at - *self.last_chunk_at;
+                let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
                 if offset + min_space <= chunk.len() {
                     // store the item size as a header
                     *(entry_ptr as *mut NextItemRef) = NextItemRef::SameChunk(ref_size + size);
