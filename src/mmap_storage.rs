@@ -76,7 +76,8 @@ impl ChunkStorage for MmapStorage {
     fn forget_chunk(&self, chunk: Chunk) {
         let handle = chunk._handle_to_drop.downcast::<MmapStorageHandle>().expect("MmapStorage got handed a foreign chunk.");
         let ident = handle.2.clone();
+        let file_path = self.directory.join(&ident.0);
         std::mem::drop(handle);
-        ::std::fs::remove_file(&ident.0).expect(format!("Couldn't remove file {}", ident.0).as_str());
+        ::std::fs::remove_file(&file_path).expect(format!("Couldn't remove file {}", file_path.to_string_lossy()).as_str());
     }
 }

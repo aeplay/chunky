@@ -1,7 +1,7 @@
 [package]
 name = "chunky"
 description = "Abstract storage of heterogeneously-sized entity-collections"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Anselm Eickhoff <anselm.eickhoff@gmail.com>"]
 repository = "https://github.com/aeickhoff/chunky"
 license = "MIT"
