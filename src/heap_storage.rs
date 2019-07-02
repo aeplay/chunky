@@ -12,7 +12,6 @@ impl HeapStorage {
 
 impl ChunkStorage for HeapStorage {
     fn create_chunk(&self, _ident: Ident, size: usize) -> Chunk {
-        //println!("Allocating chunk {} of size {}", ident.0, size);
         let mut vec = Vec::with_capacity(size);
         Chunk {
             ptr: vec.as_mut_ptr(),

@@ -38,8 +38,6 @@ impl Queue {
             storage: storage
         };
 
-        println!("Constructing {}: last_chunk_at {} write at {}", queue.ident.0, *queue.last_chunk_at, *queue.write_at);
-
         // if the persisted write_at is > 0, persisted chunks need to be loaded
         if *queue.write_at > 0 {
             let mut chunk_offset = *queue.first_chunk_at;
@@ -93,8 +91,6 @@ impl Queue {
                     // return the pointer to where the item can be written
                     EnqueueResult::Success(payload_ptr)
                 } else {
-                    //println!("Not enough space. Offset: {}, Min Space: {},
-                    //          Chunk size: {}", offset, min_space, chunk.size);
                     // store a jump marker instead of item size
                     *(entry_ptr as *mut NextItemRef) = NextItemRef::NextChunk;
                     let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
@@ -106,7 +102,6 @@ impl Queue {
             } else {
                 // create first chunk
                 let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
-                println!("Creating first chunk {}: last_chunk_at {} write_at {}", self.ident.0, *self.last_chunk_at, *self.write_at);
                 EnqueueResult::RetryInNewChunkOfSize(new_chunk_size)
             }
 

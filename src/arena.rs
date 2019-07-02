@@ -25,10 +25,8 @@ impl Arena {
         let mut chunks = Vec::new();
 
         let mut item_offset = 0;
-        println!("Loading arena {} with len {}", ident.0, *len);
 
         while item_offset < *len {
-            println!("...at offset {}", item_offset);
             chunks.push(storage.load_chunk(ident.sub(item_offset)));
             item_offset += chunk_size / item_size;
         }
