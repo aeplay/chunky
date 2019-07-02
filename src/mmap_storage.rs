@@ -58,7 +58,7 @@ impl ChunkStorage for MmapStorage {
             file.set_len(size as u64).expect(format!("Can't grow file {}", file_path.to_string_lossy()).as_str());
         }
 
-        (Self::chunk_from_file(file, &file_path, ident), existed)
+        (Self::chunk_from_file(file, &file_path, ident), !existed)
     }
 
     fn load_chunk(&self, ident: Ident) -> Chunk {

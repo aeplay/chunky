@@ -29,6 +29,10 @@ pub use vector::Vector;
 pub use queue::Queue;
 pub use multi_arena::{MultiArena, MultiArenaIndex};
 
+/// A Chunk of general purpose memory, essentially acting as &mut [u8]
+/// which can be backed by different `ChunkStorage` providers.
+/// Dropping a Chunk deallocates its in-memory space
+/// but keeps any persisted version of that chunk.
 pub struct Chunk {
     ptr: *mut u8,
     len: usize,
@@ -49,10 +53,12 @@ impl ::std::ops::DerefMut for Chunk {
     }
 }
 
+/// A provider of backing storage for `Chunks`
 pub trait ChunkStorage {
     /// Create a chunk with a given identifier
     fn create_chunk(&self, ident: Ident, size: usize) -> Chunk;
     /// Load a chunk with a given identifier, or create it if it doesn't exist
+    /// returns (chunk, true) if the chunk was created new rather than loaded
     fn load_or_create_chunk(&self, ident: Ident, size: usize) -> (Chunk, bool);
     /// Load a chunk with a given identifier, assumes it exists
     fn load_chunk(&self, ident: Ident) -> Chunk;

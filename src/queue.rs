@@ -38,8 +38,10 @@ impl Queue {
             storage: storage
         };
 
-        // if the persisted last_chunk_at is > 0, persisted chunks need to be loaded
-        if *queue.last_chunk_at > 0 {
+        println!("Constructing {}: last_chunk_at {} write at {}", queue.ident.0, *queue.last_chunk_at, *queue.write_at);
+
+        // if the persisted write_at is > 0, persisted chunks need to be loaded
+        if *queue.write_at > 0 {
             let mut chunk_offset = *queue.first_chunk_at;
             while chunk_offset <= *queue.last_chunk_at {
                 let chunk = queue.storage.load_chunk(ident.sub(chunk_offset));
@@ -104,6 +106,7 @@ impl Queue {
             } else {
                 // create first chunk
                 let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
+                println!("Creating first chunk {}: last_chunk_at {} write_at {}", self.ident.0, *self.last_chunk_at, *self.write_at);
                 EnqueueResult::RetryInNewChunkOfSize(new_chunk_size)
             }
 

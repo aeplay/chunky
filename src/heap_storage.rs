@@ -4,6 +4,7 @@ use crate::{Chunk, ChunkStorage, Ident};
 pub struct HeapStorage;
 
 impl HeapStorage {
+    /// Get an instance of `HeapStorage` - it doesn't have any configuration
     pub fn new() -> HeapStorage{
         HeapStorage
     }

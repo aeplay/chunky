@@ -20,7 +20,7 @@ impl<Item: Clone> Vector<Item> {
 
     /// Get the number of elements in the vector
     pub fn len(&self) -> usize {
-        *self.arena.len
+        self.arena.len()
     }
 
     /// Is the chunky vector empty?
@@ -56,12 +56,12 @@ impl<Item: Clone> Vector<Item> {
 
     /// Remove and return the last item, if the vector wasn't empty
     pub fn pop(&mut self) -> Option<Item> {
-        if *self.arena.len == 0 {
+        if self.arena.len() == 0 {
             None
         } else {
             unsafe {
                 let item_ptr: *const Item =
-                    self.arena.at(ArenaIndex(*self.arena.len - 1)) as *const Item;
+                    self.arena.at(ArenaIndex(self.arena.len() - 1)) as *const Item;
                 let item = Some(::std::ptr::read(item_ptr));
                 self.arena.pop_away();
                 item
