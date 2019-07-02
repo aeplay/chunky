@@ -5,22 +5,26 @@ use memmap::MmapMut;
 
 /// A `ChunkStorage` that allocates chunks by mmapping files
 pub struct MmapStorage {
-    pub directory: PathBuf
+    directory: PathBuf
 }
 
-pub struct MmapStorageHandle(MmapMut, File, Ident);
+pub struct MmapStorageHandle(MmapMut, Ident);
 
 impl Drop for MmapStorageHandle {
     fn drop(&mut self) {
-        self.0.flush().expect(format!("Couldn't flush file {}", &((self.2).0)).as_str());
+        self.0.flush().expect(format!("Couldn't flush file {}", &((self.1).0)).as_str());
     }
 }
 
 impl MmapStorage {
+    /// Create a new MmapStorage which will put files in `directory`
+    pub fn new(directory: PathBuf) -> MmapStorage {
+        MmapStorage{directory}
+    }
+
     fn chunk_from_file(file: File, file_path: &Path, ident: Ident) -> Chunk {
         let mut handle = MmapStorageHandle(
             unsafe { MmapMut::map_mut(&file).expect(format!("Can't mmap file {}", file_path.to_string_lossy()).as_str())},
-            file,
             ident
         );
 
@@ -75,7 +79,7 @@ impl ChunkStorage for MmapStorage {
     /// (unlike Drop, which only unloads a chunk)
     fn forget_chunk(&self, chunk: Chunk) {
         let handle = chunk._handle_to_drop.downcast::<MmapStorageHandle>().expect("MmapStorage got handed a foreign chunk.");
-        let ident = handle.2.clone();
+        let ident = handle.1.clone();
         let file_path = self.directory.join(&ident.0);
         std::mem::drop(handle);
         ::std::fs::remove_file(&file_path).expect(format!("Couldn't remove file {}", file_path.to_string_lossy()).as_str());

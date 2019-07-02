@@ -2,16 +2,20 @@ use crate::{Chunk, ChunkStorage, Ident};
 use crate::value::Value;
 use std::rc::Rc;
 
+struct QueueState {
+    first_chunk_at: usize,
+    last_chunk_at: usize,
+    read_at: usize,
+    write_at: usize,
+    len: usize,
+}
+
 /// A FIFO queue which stores heterogeneously sized items
 pub struct Queue {
     ident: Ident,
     typical_chunk_size: usize,
     chunks: Vec<Chunk>,
-    first_chunk_at: Value<usize>,
-    last_chunk_at: Value<usize>,
-    read_at: Value<usize>,
-    write_at: Value<usize>,
-    len: Value<usize>,
+    state: Value<QueueState>,
     chunks_to_drop: Vec<Chunk>,
     storage: Rc<dyn ChunkStorage>
 }
@@ -26,11 +30,13 @@ impl Queue {
     /// Create a new queue
     pub fn new(ident: &Ident, typical_chunk_size: usize, storage: Rc<dyn ChunkStorage>) -> Self {
         let mut queue = Queue {
-            first_chunk_at: Value::load_or_default(ident.sub("first_chunk"), 0, Rc::clone(&storage)),
-            last_chunk_at: Value::load_or_default(ident.sub("last_chunk"), 0, Rc::clone(&storage)),
-            read_at: Value::load_or_default(ident.sub("read"), 0, Rc::clone(&storage)),
-            write_at: Value::load_or_default(ident.sub("write"), 0, Rc::clone(&storage)),
-            len: Value::load_or_default(ident.sub("len"), 0, Rc::clone(&storage)),
+            state: Value::load_or_default(ident.sub("q_state"), QueueState {
+                first_chunk_at: 0,
+                last_chunk_at: 0,
+                read_at: 0,
+                write_at: 0,
+                len: 0,
+            }, Rc::clone(&storage)),
             ident: ident.clone(),
             typical_chunk_size,
             chunks: Vec::new(),
@@ -39,9 +45,9 @@ impl Queue {
         };
 
         // if the persisted write_at is > 0, persisted chunks need to be loaded
-        if *queue.write_at > 0 {
-            let mut chunk_offset = *queue.first_chunk_at;
-            while chunk_offset <= *queue.last_chunk_at {
+        if queue.state.write_at > 0 {
+            let mut chunk_offset = queue.state.first_chunk_at;
+            while chunk_offset <= queue.state.last_chunk_at {
                 let chunk = queue.storage.load_chunk(ident.sub(chunk_offset));
                 chunk_offset += chunk.len();
                 queue.chunks.push(chunk);
@@ -53,7 +59,7 @@ impl Queue {
 
     /// Number of items in the queue
     pub fn len(&self) -> usize {
-        *self.len
+        self.state.len
     }
 
     /// Is the queue empty?
@@ -80,14 +86,14 @@ impl Queue {
             let min_space = ref_size + size + ref_size;
 
             if let Some(chunk) = self.chunks.last_mut() {
-                let offset = *self.write_at - *self.last_chunk_at;
+                let offset = self.state.write_at - self.state.last_chunk_at;
                 let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
                 if offset + min_space <= chunk.len() {
                     // store the item size as a header
                     *(entry_ptr as *mut NextItemRef) = NextItemRef::SameChunk(ref_size + size);
                     let payload_ptr = entry_ptr.offset(ref_size as isize);
-                    *self.write_at += ref_size + size;
-                    *self.len += 1;
+                    self.state.write_at += ref_size + size;
+                    self.state.len += 1;
                     // return the pointer to where the item can be written
                     EnqueueResult::Success(payload_ptr)
                 } else {
@@ -95,8 +101,8 @@ impl Queue {
                     *(entry_ptr as *mut NextItemRef) = NextItemRef::NextChunk;
                     let new_chunk_size = ::std::cmp::max(self.typical_chunk_size, min_space);
                     // retry at the beginning of a new chunk
-                    *self.last_chunk_at += chunk.len();
-                    *self.write_at = *self.last_chunk_at;
+                    self.state.last_chunk_at += chunk.len();
+                    self.state.write_at = self.state.last_chunk_at;
                     EnqueueResult::RetryInNewChunkOfSize(new_chunk_size)
                 }
             } else {
@@ -111,7 +117,7 @@ impl Queue {
             EnqueueResult::Success(payload_ptr) => payload_ptr,
             EnqueueResult::RetryInNewChunkOfSize(new_chunk_size) => {
                 self.chunks.push(self.storage.create_chunk(
-                    self.ident.sub(*self.last_chunk_at),
+                    self.ident.sub(self.state.last_chunk_at),
                     new_chunk_size,
                 ));
                 self.enqueue(size)
@@ -128,24 +134,24 @@ impl Queue {
             RetryInNextChunk,
         };
 
-        let result = if *self.read_at == *self.write_at {
+        let result = if self.state.read_at == self.state.write_at {
             DequeueResult::Empty
         } else {
-            let offset = *self.read_at - *self.first_chunk_at;
+            let offset = self.state.read_at - self.state.first_chunk_at;
             let chunk = &mut self.chunks[0];
             let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
 
             #[allow(clippy::cast_ptr_alignment)]
             match *(entry_ptr as *mut NextItemRef) {
                 NextItemRef::NextChunk => {
-                    *self.first_chunk_at += chunk.len();
-                    *self.read_at = *self.first_chunk_at;
+                    self.state.first_chunk_at += chunk.len();
+                    self.state.read_at = self.state.first_chunk_at;
                     DequeueResult::RetryInNextChunk
                 }
                 NextItemRef::SameChunk(total_size) => {
                     let payload_ptr = entry_ptr.offset(::std::mem::size_of::<NextItemRef>() as isize);
-                    *self.read_at += total_size;
-                    *self.len -= 1;
+                    self.state.read_at += total_size;
+                    self.state.len -= 1;
                     DequeueResult::Success(payload_ptr)
                 }
             }

@@ -30,7 +30,7 @@ impl MultiArena {
         let mut multi_arena = MultiArena {
             typical_chunk_size,
             base_size,
-            used_bin_sizes: Vector::<usize>::new(ident.sub("used_bin_sizes"), 1024, Rc::clone(&storage)),
+            used_bin_sizes: Vector::<usize>::new(ident.sub("bin_sizes"), 1024, Rc::clone(&storage)),
             ident,
             bins: Vec::new(),
             storage
