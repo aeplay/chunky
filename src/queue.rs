@@ -41,7 +41,7 @@ impl Queue {
             typical_chunk_size,
             chunks: Vec::new(),
             chunks_to_drop: Vec::new(),
-            storage: storage
+            storage
         };
 
         // if the persisted write_at is > 0, persisted chunks need to be loaded
@@ -76,7 +76,7 @@ impl Queue {
         enum EnqueueResult {
             Success(*mut u8),
             RetryInNewChunkOfSize(usize),
-        };
+        }
 
         let result = {
             let ref_size = ::std::mem::size_of::<NextItemRef>();
@@ -87,11 +87,11 @@ impl Queue {
 
             if let Some(chunk) = self.chunks.last_mut() {
                 let offset = self.state.write_at - self.state.last_chunk_at;
-                let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
+                let entry_ptr = chunk.as_mut_ptr().add(offset);
                 if offset + min_space <= chunk.len() {
                     // store the item size as a header
                     *(entry_ptr as *mut NextItemRef) = NextItemRef::SameChunk(ref_size + size);
-                    let payload_ptr = entry_ptr.offset(ref_size as isize);
+                    let payload_ptr = entry_ptr.add(ref_size);
                     self.state.write_at += ref_size + size;
                     self.state.len += 1;
                     // return the pointer to where the item can be written
@@ -132,14 +132,14 @@ impl Queue {
             Empty,
             Success(*const u8),
             RetryInNextChunk,
-        };
+        }
 
         let result = if self.state.read_at == self.state.write_at {
             DequeueResult::Empty
         } else {
             let offset = self.state.read_at - self.state.first_chunk_at;
             let chunk = &mut self.chunks[0];
-            let entry_ptr = chunk.as_mut_ptr().offset(offset as isize);
+            let entry_ptr = chunk.as_mut_ptr().add(offset);
 
             #[allow(clippy::cast_ptr_alignment)]
             match *(entry_ptr as *mut NextItemRef) {
@@ -149,7 +149,7 @@ impl Queue {
                     DequeueResult::RetryInNextChunk
                 }
                 NextItemRef::SameChunk(total_size) => {
-                    let payload_ptr = entry_ptr.offset(::std::mem::size_of::<NextItemRef>() as isize);
+                    let payload_ptr = entry_ptr.add(::std::mem::size_of::<NextItemRef>());
                     self.state.read_at += total_size;
                     self.state.len -= 1;
                     DequeueResult::Success(payload_ptr)

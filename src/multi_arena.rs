@@ -120,9 +120,9 @@ impl MultiArena {
     }
 
     /// Return indices of bins that actually contain items and their respective lengths
-    pub fn populated_bin_indices_and_lens<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = (usize, usize)> + 'a {
+    pub fn populated_bin_indices_and_lens(
+        &'_ self,
+    ) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.bins
             .iter()
             .enumerate()
