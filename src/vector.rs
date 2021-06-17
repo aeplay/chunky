@@ -56,7 +56,7 @@ impl<Item: Clone> Vector<Item> {
 
     /// Remove and return the last item, if the vector wasn't empty
     pub fn pop(&mut self) -> Option<Item> {
-        if self.arena.len() == 0 {
+        if self.arena.is_empty() {
             None
         } else {
             unsafe {

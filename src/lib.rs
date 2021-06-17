@@ -7,7 +7,7 @@
 //! mmap'ed memory used for both runtime and savegames.
 
 #![warn(missing_docs)]
-#![feature(vec_resize_default)]
+//#![feature(vec_resize_default)]
 
 mod heap_storage;
 #[cfg(feature = "mmap")]

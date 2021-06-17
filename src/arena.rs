@@ -72,7 +72,7 @@ impl Arena {
         *self.len += 1;
         unsafe {
             (
-                self.chunks.last_mut().unwrap().as_mut_ptr().offset(offset as isize),
+                self.chunks.last_mut().unwrap().as_mut_ptr().add(offset),
                 index,
             )
         }
@@ -109,9 +109,8 @@ impl Arena {
 
     /// Get a pointer to the item at `index`
     pub unsafe fn at(&self, index: ArenaIndex) -> *const u8 {
-        self.chunks[index.0 / self.items_per_chunk()]
-            .as_ptr()
-            .offset(((index.0 % self.items_per_chunk()) * self.item_size) as isize)
+        self.chunks[index.0 / self.items_per_chunk()].as_ptr()
+            .add((index.0 % self.items_per_chunk()) * self.item_size)
     }
 
     /// Get a mutable pointer to the item at `index`
@@ -119,6 +118,6 @@ impl Arena {
         let items_per_chunk = self.items_per_chunk();
         self.chunks[index.0 / items_per_chunk]
             .as_mut_ptr()
-            .offset(((index.0 % items_per_chunk) * self.item_size) as isize)
+            .add((index.0 % items_per_chunk) * self.item_size)
     }
 }
